@@ -1,0 +1,220 @@
+namespace: chatwoot
+
+example-db:
+  defines: runnable
+  metadata:
+    name: Chatwoot Component Example PostgreSQL
+    description: |
+      pgvector-capable PostgreSQL database used by the Chatwoot component
+      example. It remains private on the Monk network.
+    tags: chatwoot, postgres, pgvector, database, example, local
+    website: https://github.com/pgvector/pgvector
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    postgres-image-tag:
+      type: string
+      value: pg16
+      description: Public Docker Hub pgvector/pgvector image tag used by the component example.
+    postgres-database:
+      type: string
+      env: POSTGRES_DB
+      value: <- $example-db-name
+      description: PostgreSQL database name created for Chatwoot.
+    postgres-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $example-db-user
+      description: PostgreSQL user created for Chatwoot.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $example-db-password
+      description: Sensitive generated PostgreSQL password for local component verification.
+  containers:
+    postgres:
+      image: pgvector/pgvector
+      image-tag: <- $postgres-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/chatwoot-example-postgres:/var/lib/postgresql/data`
+  services:
+    postgres:
+      container: postgres
+      port: 5432
+      protocol: tcp
+      publish: false
+      description: Private PostgreSQL endpoint consumed by the Chatwoot component example.
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/example-db", "postgres")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+example-redis:
+  defines: runnable
+  metadata:
+    name: Chatwoot Component Example Redis
+    description: |
+      Redis cache, pub/sub, and background job broker used by the Chatwoot
+      component example. It remains private on the Monk network.
+    tags: chatwoot, redis, cache, queue, example, local
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://redis.io/images/redis-white.png
+    private: false
+  variables:
+    redis-image-tag:
+      type: string
+      value: 7-alpine
+      description: Public Docker Hub redis image tag used by the component example.
+    redis-volume-name:
+      type: string
+      value: chatwoot-example-redis
+      description: Monk volume subdirectory used for Redis append-only data.
+  containers:
+    redis:
+      image: redis
+      image-tag: <- $redis-image-tag
+      bash: redis-server --appendonly yes
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/${redis-volume-name}:/data`
+  services:
+    redis:
+      container: redis
+      port: 6379
+      protocol: tcp
+      publish: false
+      description: Private Redis endpoint consumed by the Chatwoot component example.
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/example-redis", "redis")
+      period: 10
+      initialDelay: 5
+      attempts: 30
+
+example-app:
+  defines: runnable
+  inherits: chatwoot/base
+  metadata:
+    name: Chatwoot Component Example App
+    description: |
+      Component demonstration that inherits the reusable Chatwoot base and wires
+      it to concrete pgvector PostgreSQL and Redis services. It publishes a
+      localhost port for external smoke testing only.
+    tags: chatwoot, helpdesk, component, example, local
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    frontend-url:
+      type: string
+      env: FRONTEND_URL
+      value: http://127.0.0.1:8150
+      description: Local URL used by the Chatwoot component example.
+    secret-key-base:
+      type: string
+      env: SECRET_KEY_BASE
+      value: <- $example-secret-key-base
+      description: Sensitive generated Rails secret key base for local component verification.
+    postgres-host:
+      type: string
+      env: POSTGRES_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname read from the component example database connection.
+    postgres-database:
+      type: string
+      env: POSTGRES_DATABASE
+      value: <- $example-db-name
+      description: PostgreSQL database name used by the Chatwoot component example.
+    postgres-username:
+      type: string
+      env: POSTGRES_USERNAME
+      value: <- $example-db-user
+      description: PostgreSQL username used by the Chatwoot component example.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $example-db-password
+      description: Sensitive generated PostgreSQL password shared with the component example database.
+    redis-url:
+      type: string
+      env: REDIS_URL
+      value: <- "redis://" connection-hostname("redis") ":6379" concat-all
+      description: Redis URL built from the component example Redis connection.
+    host-port:
+      type: int
+      value: 8150
+      description: Non-privileged host port published for local component example verification.
+  services:
+    http:
+      container: rails
+      port: 3000
+      protocol: tcp
+      publish: true
+      host-port: <- $host-port
+      description: Published local Chatwoot HTTP service for component example verification.
+  connections:
+    database:
+      target: chatwoot/example-db
+      service: postgres
+      description: Private pgvector PostgreSQL service connected to Chatwoot.
+    redis:
+      target: chatwoot/example-redis
+      service: redis
+      description: Private Redis service connected to Chatwoot.
+  depends:
+    wait-for:
+      runnables:
+        - chatwoot/example-db
+        - chatwoot/example-redis
+      timeout: 180
+  checks:
+    readiness:
+      code: http-get-service("chatwoot/example-app", "http", "/") get-member("status") 200
+      period: 15
+      initialDelay: 120
+      attempts: 40
+
+example:
+  defines: process-group
+  metadata:
+    name: Chatwoot Component Example
+    description: |
+      Component demonstration composing the reusable Chatwoot base with concrete
+      pgvector PostgreSQL and Redis backing services, publishing Chatwoot on a
+      local non-privileged port for verification.
+    tags: chatwoot, helpdesk, postgres, redis, component, example, local
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    example-db-name:
+      type: string
+      value: chatwoot
+      description: PostgreSQL database name shared by component example workloads.
+    example-db-user:
+      type: string
+      value: chatwoot
+      description: PostgreSQL username shared by component example workloads.
+    example-db-password:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated PostgreSQL password for component example verification.
+    example-secret-key-base:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated Rails secret key base for component example verification.
+  runnable-list:
+    - chatwoot/example-db
+    - chatwoot/example-redis
+    - chatwoot/example-app

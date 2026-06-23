@@ -1,0 +1,181 @@
+namespace: chatwoot
+
+base:
+  defines: runnable
+  metadata:
+    name: Chatwoot
+    description: |
+      Reusable Chatwoot support desk component using the public chatwoot/chatwoot
+      Docker image. The base expects external PostgreSQL and Redis services to be
+      connected as `database` and `redis`. PostgreSQL must support the `vector`
+      extension; compatible backing services include a pgvector-capable
+      PostgreSQL image, the self-hosted Monk `postgresql/db` package when
+      extended with pgvector, or hosted PostgreSQL such as Neon with pgvector
+      enabled.
+    tags: chatwoot, helpdesk, support, rails, component
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    chatwoot-image-tag:
+      type: string
+      value: latest
+      description: Public Docker Hub chatwoot/chatwoot image tag to run.
+    rails-env:
+      type: string
+      env: RAILS_ENV
+      value: production
+      description: Rails runtime environment.
+    node-env:
+      type: string
+      env: NODE_ENV
+      value: production
+      description: Node runtime environment used by the Chatwoot image.
+    installation-env:
+      type: string
+      env: INSTALLATION_ENV
+      value: docker
+      description: Chatwoot installation environment marker.
+    frontend-url:
+      type: string
+      env: FRONTEND_URL
+      value: ""
+      description: Public URL users access Chatwoot through. Exposed templates should set this to the external endpoint.
+    force-ssl:
+      type: string
+      env: FORCE_SSL
+      value: "false"
+      description: Whether Chatwoot should force SSL redirects.
+    enable-account-signup:
+      type: string
+      env: ENABLE_ACCOUNT_SIGNUP
+      value: "false"
+      description: Controls whether new account signup is enabled in Chatwoot.
+    active-storage-service:
+      type: string
+      env: ACTIVE_STORAGE_SERVICE
+      value: local
+      description: Active Storage backend. The base uses local container storage by default.
+    rails-log-to-stdout:
+      type: string
+      env: RAILS_LOG_TO_STDOUT
+      value: "true"
+      description: Sends Rails logs to stdout for Monk log collection.
+    rails-serve-static-files:
+      type: string
+      env: RAILS_SERVE_STATIC_FILES
+      value: "true"
+      description: Enables Rails static file serving in the container.
+    rails-max-threads:
+      type: int
+      env: RAILS_MAX_THREADS
+      value: 5
+      description: Puma maximum thread count.
+    sidekiq-concurrency:
+      type: int
+      env: SIDEKIQ_CONCURRENCY
+      value: 10
+      description: Sidekiq worker concurrency.
+    log-level:
+      type: string
+      env: LOG_LEVEL
+      value: info
+      description: Chatwoot application log level.
+    secret-key-base:
+      type: string
+      env: SECRET_KEY_BASE
+      value: ""
+      description: Sensitive Rails secret key base. Inheriting templates must set a generated value or secret("chatwoot-secret-key-base") using a plain secret name.
+    postgres-host:
+      type: string
+      env: POSTGRES_HOST
+      value: ""
+      description: PostgreSQL hostname. Inheriting templates should set this from connection-hostname("database").
+    postgres-database:
+      type: string
+      env: POSTGRES_DATABASE
+      value: ""
+      description: PostgreSQL database name supplied by an inheriting template.
+    postgres-username:
+      type: string
+      env: POSTGRES_USERNAME
+      value: ""
+      description: PostgreSQL username supplied by an inheriting template.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: ""
+      description: Sensitive PostgreSQL password. Inheriting templates must set a generated value or secret("chatwoot-postgres-password") using a plain secret name.
+    redis-url:
+      type: string
+      env: REDIS_URL
+      value: ""
+      description: Redis URL. Inheriting templates should set this from connection-hostname("redis") and include credentials when Redis requires them.
+    mailer-sender-email:
+      type: string
+      env: MAILER_SENDER_EMAIL
+      value: Chatwoot <accounts@chatwoot.com>
+      description: Default From address for outgoing email.
+    smtp-domain:
+      type: string
+      env: SMTP_DOMAIN
+      value: chatwoot.com
+      description: SMTP HELO domain for outgoing email.
+    smtp-address:
+      type: string
+      env: SMTP_ADDRESS
+      value: ""
+      description: Optional SMTP server address. Empty leaves email delivery to the image defaults.
+    smtp-port:
+      type: string
+      env: SMTP_PORT
+      value: "587"
+      description: Optional SMTP server port.
+    smtp-username:
+      type: string
+      env: SMTP_USERNAME
+      value: ""
+      description: Optional SMTP username.
+    smtp-password:
+      type: string
+      env: SMTP_PASSWORD
+      value: ""
+      description: Sensitive optional SMTP password. Inheriting templates should set secret("chatwoot-smtp-password") when SMTP auth is used.
+    smtp-authentication:
+      type: string
+      env: SMTP_AUTHENTICATION
+      value: ""
+      description: Optional SMTP authentication mechanism such as plain or login.
+    smtp-enable-starttls-auto:
+      type: string
+      env: SMTP_ENABLE_STARTTLS_AUTO
+      value: "true"
+      description: Enables SMTP STARTTLS auto negotiation.
+    storage-volume-name:
+      type: string
+      value: chatwoot-storage
+      description: Monk volume subdirectory used for Chatwoot local uploads and attachments.
+  containers:
+    rails:
+      image: chatwoot/chatwoot
+      image-tag: <- $chatwoot-image-tag
+      bash: docker/entrypoints/rails.sh bundle exec rails db:chatwoot_prepare && docker/entrypoints/rails.sh bundle exec rails s -p 3000 -b 0.0.0.0
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/${storage-volume-name}:/app/storage`
+    sidekiq:
+      image: chatwoot/chatwoot
+      image-tag: <- $chatwoot-image-tag
+      bash: bundle exec sidekiq -C config/sidekiq.yml
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/${storage-volume-name}:/app/storage`
+  services:
+    http:
+      container: rails
+      port: 3000
+      protocol: tcp
+      publish: false
+      description: Private Chatwoot Rails HTTP service.
