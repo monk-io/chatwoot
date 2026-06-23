@@ -1,0 +1,4 @@
+LOAD chatwoot.yaml
+LOAD chatwoot-example.yaml
+LOAD chatwoot-stack.yaml
+ENTRY chatwoot/stack-local

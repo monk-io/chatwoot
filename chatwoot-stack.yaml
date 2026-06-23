@@ -1,0 +1,429 @@
+namespace: chatwoot
+
+stack-db:
+  defines: runnable
+  metadata:
+    name: Chatwoot Stack PostgreSQL
+    description: |
+      Private pgvector-capable PostgreSQL database for the production-oriented
+      standalone Chatwoot stack.
+    tags: chatwoot, postgres, pgvector, database, standalone, production
+    website: https://github.com/pgvector/pgvector
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    postgres-image-tag:
+      type: string
+      value: pg16
+      description: Public Docker Hub pgvector/pgvector image tag used by the standalone stack.
+    postgres-database:
+      type: string
+      env: POSTGRES_DB
+      value: <- $stack-db-name
+      description: PostgreSQL database name created for Chatwoot.
+    postgres-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $stack-db-user
+      description: PostgreSQL user created for Chatwoot.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $stack-db-password
+      description: Sensitive generated PostgreSQL password. Inheriting production templates that need stable credentials should set secret("chatwoot-postgres-password").
+  containers:
+    postgres:
+      image: pgvector/pgvector
+      image-tag: <- $postgres-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/chatwoot-stack-postgres:/var/lib/postgresql/data`
+  services:
+    postgres:
+      container: postgres
+      port: 5432
+      protocol: tcp
+      publish: false
+      description: Private PostgreSQL endpoint consumed by Chatwoot.
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/stack-db", "postgres")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-redis:
+  defines: runnable
+  metadata:
+    name: Chatwoot Stack Redis
+    description: |
+      Private Redis cache, pub/sub, and background job broker for the
+      production-oriented standalone Chatwoot stack.
+    tags: chatwoot, redis, cache, queue, standalone, production
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://redis.io/images/redis-white.png
+    private: false
+  variables:
+    redis-image-tag:
+      type: string
+      value: 7-alpine
+      description: Public Docker Hub redis image tag used by the standalone stack.
+    redis-password:
+      type: string
+      env: REDIS_PASSWORD
+      value: <- $stack-redis-password
+      description: Sensitive generated Redis password. Inheriting production templates that need stable credentials should set secret("chatwoot-redis-password").
+    redis-volume-name:
+      type: string
+      value: chatwoot-stack-redis
+      description: Monk volume subdirectory used for Redis append-only data.
+  containers:
+    redis:
+      image: redis
+      image-tag: <- $redis-image-tag
+      bash: <- "redis-server --requirepass " $redis-password " --appendonly yes" concat-all
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/${redis-volume-name}:/data`
+  services:
+    redis:
+      container: redis
+      port: 6379
+      protocol: tcp
+      publish: false
+      description: Private Redis endpoint consumed by Chatwoot.
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/stack-redis", "redis")
+      period: 10
+      initialDelay: 5
+      attempts: 30
+
+stack-app:
+  defines: runnable
+  inherits: chatwoot/base
+  metadata:
+    name: Chatwoot Standalone App
+    description: |
+      Production-oriented Chatwoot Rails and Sidekiq workloads connected to
+      private pgvector PostgreSQL and Redis. The HTTP service is intended for
+      Monk ingress on ingress-capable targets.
+    tags: chatwoot, helpdesk, rails, sidekiq, standalone, production
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    frontend-url:
+      type: string
+      env: FRONTEND_URL
+      value: <- $stack-frontend-url
+      description: Public URL for the production-oriented Chatwoot stack.
+    secret-key-base:
+      type: string
+      env: SECRET_KEY_BASE
+      value: <- $stack-secret-key-base
+      description: Sensitive generated Rails secret key base. Inheriting production templates that need stable credentials should set secret("chatwoot-secret-key-base").
+    postgres-host:
+      type: string
+      env: POSTGRES_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname read from the standalone stack database connection.
+    postgres-database:
+      type: string
+      env: POSTGRES_DATABASE
+      value: <- $stack-db-name
+      description: PostgreSQL database name used by Chatwoot.
+    postgres-username:
+      type: string
+      env: POSTGRES_USERNAME
+      value: <- $stack-db-user
+      description: PostgreSQL username used by Chatwoot.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $stack-db-password
+      description: Sensitive generated PostgreSQL password shared with the stack database.
+    redis-url:
+      type: string
+      env: REDIS_URL
+      value: <- "redis://:" $stack-redis-password "@" connection-hostname("redis") ":6379" concat-all
+      description: Redis URL including the sensitive generated Redis password.
+  services:
+    http:
+      container: rails
+      port: 3000
+      protocol: tcp
+      publish: false
+      description: Chatwoot HTTP service intended for production ingress.
+      ingress-routes:
+        chatwoot:
+          path-prefix: /
+  connections:
+    database:
+      target: chatwoot/stack-db
+      service: postgres
+      description: Private pgvector PostgreSQL service connected to Chatwoot.
+    redis:
+      target: chatwoot/stack-redis
+      service: redis
+      description: Private Redis service connected to Chatwoot.
+  depends:
+    wait-for:
+      runnables:
+        - chatwoot/stack-db
+        - chatwoot/stack-redis
+      timeout: 180
+  checks:
+    readiness:
+      code: http-get-service("chatwoot/stack-app", "http", "/") get-member("status") 200
+      period: 15
+      initialDelay: 120
+      attempts: 40
+
+stack:
+  defines: process-group
+  metadata:
+    name: Chatwoot Standalone Stack
+    description: |
+      Secure production-oriented standalone Chatwoot stack with private
+      pgvector PostgreSQL, private password-protected Redis, local attachment
+      storage, Rails, and Sidekiq. Only the authenticated Chatwoot HTTP surface
+      is exposed through Monk ingress; no backing service is published.
+    tags: chatwoot, helpdesk, postgres, pgvector, redis, standalone, production
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    stack-db-name:
+      type: string
+      value: chatwoot
+      description: PostgreSQL database name shared by standalone stack workloads.
+    stack-db-user:
+      type: string
+      value: chatwoot
+      description: PostgreSQL username shared by standalone stack workloads.
+    stack-db-password:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated PostgreSQL password. Inheriting production templates that need stable credentials should set secret("chatwoot-postgres-password").
+    stack-redis-password:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated Redis password. Inheriting production templates that need stable credentials should set secret("chatwoot-redis-password").
+    stack-secret-key-base:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated Rails secret key base. Inheriting production templates that need stable credentials should set secret("chatwoot-secret-key-base").
+    stack-frontend-url:
+      type: string
+      value: https://chatwoot.localhost
+      description: Production public URL placeholder; inheriting deployments should set the real ingress hostname.
+  runnable-list:
+    - chatwoot/stack-db
+    - chatwoot/stack-redis
+    - chatwoot/stack-app
+
+stack-local-db:
+  defines: runnable
+  inherits: chatwoot/stack-db
+  metadata:
+    name: Chatwoot Local Stack PostgreSQL
+    description: |
+      Private pgvector PostgreSQL database for the local standalone Chatwoot
+      verification flavor.
+    tags: chatwoot, postgres, pgvector, database, standalone, local
+    website: https://github.com/pgvector/pgvector
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    postgres-database:
+      type: string
+      env: POSTGRES_DB
+      value: <- $stack-local-db-name
+      description: PostgreSQL database name created for the local stack flavor.
+    postgres-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $stack-local-db-user
+      description: PostgreSQL user created for the local stack flavor.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $stack-local-db-password
+      description: Sensitive generated PostgreSQL password for the local stack flavor.
+  containers:
+    postgres:
+      paths:
+        - <- `${volume-path}/chatwoot-stack-local-postgres:/var/lib/postgresql/data`
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/stack-local-db", "postgres")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-local-redis:
+  defines: runnable
+  inherits: chatwoot/stack-redis
+  metadata:
+    name: Chatwoot Local Stack Redis
+    description: |
+      Private password-protected Redis service for the local standalone
+      Chatwoot verification flavor.
+    tags: chatwoot, redis, cache, queue, standalone, local
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://redis.io/images/redis-white.png
+    private: false
+  variables:
+    redis-password:
+      type: string
+      env: REDIS_PASSWORD
+      value: <- $stack-local-redis-password
+      description: Sensitive generated Redis password for the local stack flavor.
+    redis-volume-name:
+      type: string
+      value: chatwoot-stack-local-redis
+      description: Monk volume subdirectory used for local Redis append-only data.
+  checks:
+    readiness:
+      code: tcp-check-service("chatwoot/stack-local-redis", "redis")
+      period: 10
+      initialDelay: 5
+      attempts: 30
+
+stack-local-app:
+  defines: runnable
+  inherits: chatwoot/base
+  metadata:
+    name: Chatwoot Local Standalone App
+    description: |
+      Local verification flavor for the standalone Chatwoot stack. It publishes
+      Chatwoot on a non-privileged localhost port because Monk ingress is not
+      available on local targets.
+    tags: chatwoot, helpdesk, rails, sidekiq, standalone, local
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    frontend-url:
+      type: string
+      env: FRONTEND_URL
+      value: http://127.0.0.1:8151
+      description: Local URL used by the standalone verification flavor.
+    secret-key-base:
+      type: string
+      env: SECRET_KEY_BASE
+      value: <- $stack-local-secret-key-base
+      description: Sensitive generated Rails secret key base for local stack verification.
+    postgres-host:
+      type: string
+      env: POSTGRES_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname read from the local stack database connection.
+    postgres-database:
+      type: string
+      env: POSTGRES_DATABASE
+      value: <- $stack-local-db-name
+      description: PostgreSQL database name used by the local stack flavor.
+    postgres-username:
+      type: string
+      env: POSTGRES_USERNAME
+      value: <- $stack-local-db-user
+      description: PostgreSQL username used by the local stack flavor.
+    postgres-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $stack-local-db-password
+      description: Sensitive generated PostgreSQL password shared with the local stack database.
+    redis-url:
+      type: string
+      env: REDIS_URL
+      value: <- "redis://:" $stack-local-redis-password "@" connection-hostname("redis") ":6379" concat-all
+      description: Redis URL including the sensitive generated Redis password for the local stack flavor.
+    host-port:
+      type: int
+      value: 8151
+      description: Non-privileged host port published for local standalone stack verification.
+  services:
+    http:
+      container: rails
+      port: 3000
+      protocol: tcp
+      publish: true
+      host-port: <- $host-port
+      description: Published local Chatwoot HTTP service for standalone stack verification.
+  connections:
+    database:
+      target: chatwoot/stack-local-db
+      service: postgres
+      description: Private pgvector PostgreSQL service connected to the local stack app.
+    redis:
+      target: chatwoot/stack-local-redis
+      service: redis
+      description: Private Redis service connected to the local stack app.
+  depends:
+    wait-for:
+      runnables:
+        - chatwoot/stack-local-db
+        - chatwoot/stack-local-redis
+      timeout: 180
+  checks:
+    readiness:
+      code: http-get-service("chatwoot/stack-local-app", "http", "/") get-member("status") 200
+      period: 15
+      initialDelay: 120
+      attempts: 40
+
+stack-local:
+  defines: process-group
+  metadata:
+    name: Chatwoot Standalone Local Stack
+    description: |
+      Local verification flavor for the standalone Chatwoot stack. PostgreSQL
+      and Redis remain private, and Chatwoot is published on a local
+      non-privileged port for external HTTP proof.
+    tags: chatwoot, helpdesk, postgres, pgvector, redis, standalone, local
+    website: https://www.chatwoot.com/
+    source: https://github.com/chatwoot/chatwoot
+    publisher: monk.io
+    icon: https://www.chatwoot.com/images/logo.svg
+    private: false
+  variables:
+    stack-local-db-name:
+      type: string
+      value: chatwoot
+      description: PostgreSQL database name shared by local stack workloads.
+    stack-local-db-user:
+      type: string
+      value: chatwoot
+      description: PostgreSQL username shared by local stack workloads.
+    stack-local-db-password:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated PostgreSQL password for local stack verification.
+    stack-local-redis-password:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated Redis password for local stack verification.
+    stack-local-secret-key-base:
+      type: string
+      value: <- random-uuid
+      description: Sensitive generated Rails secret key base for local stack verification.
+  runnable-list:
+    - chatwoot/stack-local-db
+    - chatwoot/stack-local-redis
+    - chatwoot/stack-local-app
